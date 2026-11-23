@@ -8,15 +8,22 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
+import android.graphics.Path
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : android.app.Activity() {
     private class Tx(val out: Boolean, val amount: Long, val cat: String, val note: String, val time: Long)
@@ -91,7 +98,7 @@ class MainActivity : android.app.Activity() {
         saldo = masuk - keluar
     }
 
-    // ---------- Transisi antar layar: hanya translasi + alpha pada hardware layer ----------
+    // ---------- Transisi antar layar: geser + zoom + putar 3D halus (hanya properti transform/alpha) ----------
     private fun show(next: View, forward: Boolean, animate: Boolean) {
         while (container.childCount > 1) container.removeViewAt(0)
         val old = current
@@ -101,15 +108,20 @@ class MainActivity : android.app.Activity() {
             old?.let { container.removeView(it) }
             return
         }
-        val shift = resources.displayMetrics.widthPixels * 0.25f * (if (forward) 1f else -1f)
-        next.translationX = shift
-        next.alpha = 0f
+        val dir = if (forward) 1f else -1f
+        val shift = resources.displayMetrics.widthPixels * 0.3f * dir
+        val cd = 12000f * resources.displayMetrics.density
+        next.cameraDistance = cd; old.cameraDistance = cd
+        next.translationX = shift; next.rotationY = -16f * dir
+        next.scaleX = 0.92f; next.scaleY = 0.92f; next.alpha = 0f
         old.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         next.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        old.animate().translationX(-shift).alpha(0f).setDuration(240).setInterpolator(ease)
+        old.animate().translationX(-shift).rotationY(16f * dir).scaleX(0.92f).scaleY(0.92f).alpha(0f)
+            .setDuration(320).setInterpolator(ease)
             .withEndAction { container.removeView(old); old.setLayerType(View.LAYER_TYPE_NONE, null) }
             .start()
-        next.animate().translationX(0f).alpha(1f).setDuration(240).setInterpolator(ease)
+        next.animate().translationX(0f).rotationY(0f).scaleX(1f).scaleY(1f).alpha(1f)
+            .setDuration(320).setInterpolator(ease)
             .withEndAction { next.setLayerType(View.LAYER_TYPE_NONE, null) }
             .start()
     }
@@ -123,61 +135,148 @@ class MainActivity : android.app.Activity() {
 
     private fun page(): LinearLayout {
         val root=LinearLayout(this); root.orientation=LinearLayout.VERTICAL
-        root.setPadding(24,30,24,18); root.setBackgroundColor(Color.WHITE)
+        root.setPadding(dp(16), dp(24), dp(16), dp(24))
+        root.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.rgb(224,242,254), Color.rgb(250,245,255)))
         return root
     }
 
     private fun scrolled(root: View): ScrollView {
         val s = ScrollView(this)
         s.isFillViewport = true
-        s.setBackgroundColor(Color.WHITE)
+        s.setBackgroundColor(Color.rgb(224,242,254))
         s.addView(root)
+        if (root is LinearLayout) {
+            for (i in 0 until root.childCount) {
+                val ch = root.getChildAt(i)
+                ch.alpha = 0f; ch.translationY = dp(30).toFloat()
+                ch.animate().alpha(1f).translationY(0f).setStartDelay(140L + minOf(i, 8) * 55L)
+                    .setDuration(380).setInterpolator(ease).start()
+            }
+        }
         return s
+    }
+
+    private fun bg(c1: Int, c2: Int, r: Int): GradientDrawable {
+        val g = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2))
+        g.cornerRadius = dp(r).toFloat()
+        return g
+    }
+
+    private fun solid(c: Int, r: Int): GradientDrawable {
+        val g = GradientDrawable()
+        g.setColor(c); g.cornerRadius = dp(r).toFloat()
+        return g
+    }
+
+    private fun mlp(): LinearLayout.LayoutParams {
+        val p = LinearLayout.LayoutParams(-1, -2)
+        p.topMargin = dp(8); p.bottomMargin = dp(8)
+        return p
+    }
+
+    private fun styleBtn(b: Button) {
+        b.transformationMethod = null
+        b.textSize = 16f
+        b.setTextColor(Color.rgb(30,41,59))
+        b.setPadding(dp(18), dp(14), dp(18), dp(14))
+        b.background = solid(Color.WHITE, 20)
+        b.elevation = dp(4).toFloat()
+    }
+
+    private fun menuBtn(text: String, icon: Int, onClick: () -> Unit): Button {
+        val b = Button(this); b.text = text
+        styleBtn(b); ico(b, icon)
+        b.setOnClickListener { onClick() }
+        make3d(b)
+        return b
+    }
+
+    // Kolom menu 3D: menekan = timbul, geser mendatar = berputar bebas 360 derajat lalu kembali ke posisi depan
+    private fun make3d(v: View) {
+        v.elevation = dp(6).toFloat()
+        v.cameraDistance = 9000f * resources.displayMetrics.density
+        var sx = 0f
+        var drag = false
+        var base = 0f
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    sx = e.rawX; drag = false; base = view.rotationY
+                    view.animate().scaleX(0.97f).scaleY(0.97f).setStartDelay(0).setDuration(90)
+                        .setInterpolator(DecelerateInterpolator()).start()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - sx
+                    if (!drag && abs(dx) > dp(14)) { drag = true; view.parent?.requestDisallowInterceptTouchEvent(true) }
+                    if (drag) view.rotationY = base + dx * 0.6f
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (drag) {
+                        val target = Math.round(view.rotationY / 360f) * 360f
+                        view.animate().scaleX(1f).scaleY(1f).rotationY(target).setStartDelay(0).setDuration(500)
+                            .setInterpolator(OvershootInterpolator(1.1f)).withEndAction { view.rotationY = 0f }.start()
+                    } else {
+                        view.animate().scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(120)
+                            .setInterpolator(DecelerateInterpolator()).start()
+                        if (e.actionMasked == MotionEvent.ACTION_UP) view.performClick()
+                    }
+                }
+            }
+            true
+        }
     }
 
     // ---------- Dashboard ----------
     private fun showDashboard(forward: Boolean = false, animate: Boolean = true) {
         onDashboard = true
         val root = page()
-        root.addView(tv("Dompet",30f,true))
-        root.addView(tv("Keuangan pribadi • offline-first",14f))
 
-        val balance=tv("Saldo\n${money(saldo)}",25f,true)
-        balance.setPadding(18,22,18,22)
-        balance.setBackgroundColor(Color.rgb(239,246,255))
-        ico(balance, R.drawable.ic_wallet)
-        root.addView(balance)
+        val head = LinearLayout(this); head.orientation = LinearLayout.VERTICAL
+        head.setPadding(dp(20), dp(18), dp(20), dp(18))
+        head.background = bg(Color.rgb(79,70,229), Color.rgb(14,165,233), 24)
+        head.elevation = dp(6).toFloat()
+        val h1 = tv("Dompet", 30f, true); h1.setTextColor(Color.WHITE)
+        val h2 = tv("Keuangan pribadi • offline-first", 14f); h2.setTextColor(Color.rgb(224,231,255))
+        head.addView(h1); head.addView(h2)
+        root.addView(head, mlp())
 
-        val grid=LinearLayout(this); grid.orientation=LinearLayout.HORIZONTAL
-        val income=tv("Masuk\n${money(masuk)}",16f,true)
-        val expense=tv("Keluar\n${money(keluar)}",16f,true)
-        income.setPadding(12,18,12,18); expense.setPadding(12,18,12,18)
+        val balance = tv("Saldo\n${money(saldo)}", 25f, true)
+        balance.setTextColor(Color.WHITE); balance.setPadding(dp(18), dp(20), dp(18), dp(20))
+        balance.background = bg(Color.rgb(15,23,42), Color.rgb(67,56,202), 22)
+        ico(balance, R.drawable.ic_wallet); make3d(balance)
+        root.addView(balance, mlp())
+
+        val grid = LinearLayout(this); grid.orientation = LinearLayout.HORIZONTAL
+        val income = tv("Masuk\n${money(masuk)}", 16f, true)
+        val expense = tv("Keluar\n${money(keluar)}", 16f, true)
+        income.setTextColor(Color.rgb(22,163,74)); expense.setTextColor(Color.rgb(220,38,38))
+        for (v in arrayOf(income, expense)) {
+            v.setPadding(dp(14), dp(16), dp(14), dp(16)); v.background = solid(Color.WHITE, 20); make3d(v)
+        }
         ico(income, R.drawable.ic_in); ico(expense, R.drawable.ic_out)
-        grid.addView(income,LinearLayout.LayoutParams(0,-2,1f))
-        grid.addView(expense,LinearLayout.LayoutParams(0,-2,1f))
-        root.addView(grid)
+        val gl = LinearLayout.LayoutParams(0, -2, 1f); gl.rightMargin = dp(6)
+        val gr = LinearLayout.LayoutParams(0, -2, 1f); gr.leftMargin = dp(6)
+        grid.addView(income, gl); grid.addView(expense, gr)
+        root.addView(grid, mlp())
 
-        root.addView(tv("Ringkasan",19f,true))
-        root.addView(tv("Sisa yang dapat ditabung: ${money((masuk-keluar).coerceAtLeast(0))}",16f))
-
+        val sum = LinearLayout(this); sum.orientation = LinearLayout.VERTICAL
+        sum.setPadding(dp(16), dp(12), dp(16), dp(12))
+        sum.background = solid(Color.WHITE, 22); sum.elevation = dp(4).toFloat()
+        sum.addView(tv("Ringkasan", 19f, true))
+        sum.addView(tv("Sisa yang dapat ditabung: ${money((masuk-keluar).coerceAtLeast(0))}", 16f))
         val ring = RingChart(this)
         ring.setTarget(if (masuk > 0) keluar.toFloat() / masuk else 0f)
-        val rp = LinearLayout.LayoutParams(dp(180), dp(180))
-        rp.gravity = Gravity.CENTER_HORIZONTAL; rp.topMargin = dp(8); rp.bottomMargin = dp(8)
-        root.addView(ring, rp)
+        val rp = LinearLayout.LayoutParams(dp(180), dp(180)); rp.gravity = Gravity.CENTER_HORIZONTAL; rp.topMargin = dp(8)
+        sum.addView(ring, rp)
+        root.addView(sum, mlp())
 
-        val add=Button(this); add.text="Tambah transaksi"; ico(add, R.drawable.ic_add); add.setOnClickListener { showTransaction() }
-        root.addView(add)
-
-        val report=Button(this); report.text="Laporan, ringkasan & kategori"; ico(report, R.drawable.ic_chart); report.setOnClickListener { showReport() }
-        root.addView(report)
-
-        val reset=Button(this); reset.text="Reset data"; ico(reset, R.drawable.ic_trash); reset.setOnClickListener {
+        root.addView(menuBtn("Tambah transaksi", R.drawable.ic_add) { showTransaction() }, mlp())
+        root.addView(menuBtn("Laporan, ringkasan & kategori", R.drawable.ic_chart) { showReport() }, mlp())
+        root.addView(menuBtn("Reset data", R.drawable.ic_trash) {
             AlertDialog.Builder(this).setMessage("Hapus semua transaksi?")
                 .setPositiveButton("Hapus") { _, _ -> txs.clear(); persist(); recalc(); showDashboard() }
                 .setNegativeButton("Batal", null).show()
-        }
-        root.addView(reset)
+        }, mlp())
         show(scrolled(root), forward, animate)
     }
 
@@ -199,7 +298,7 @@ class MainActivity : android.app.Activity() {
         root.addView(category)
         val note=EditText(this); note.hint="Catatan"
         root.addView(note)
-        val saveBtn=Button(this); saveBtn.text="Simpan"; ico(saveBtn, R.drawable.ic_check)
+        val saveBtn=Button(this); saveBtn.text="Simpan"; ico(saveBtn, R.drawable.ic_check); styleBtn(saveBtn)
         saveBtn.setOnClickListener {
             val n=amount.text.toString().toLongOrNull()
             if(n==null || n<=0){ amount.error="Masukkan nominal yang benar"; return@setOnClickListener }
@@ -208,9 +307,9 @@ class MainActivity : android.app.Activity() {
             persist(); recalc(); showDashboard(forward = false)
             Toast.makeText(this,"Transaksi tersimpan",Toast.LENGTH_SHORT).show()
         }
-        root.addView(saveBtn)
-        val back=Button(this); back.text="Batal"; ico(back, R.drawable.ic_close); back.setOnClickListener { showDashboard(forward = false) }
-        root.addView(back)
+        root.addView(saveBtn, mlp())
+        val back=Button(this); back.text="Batal"; ico(back, R.drawable.ic_close); styleBtn(back); back.setOnClickListener { showDashboard(forward = false) }
+        root.addView(back, mlp())
         show(scrolled(root), true, true)
     }
 
@@ -221,16 +320,18 @@ class MainActivity : android.app.Activity() {
         root.addView(tv("Laporan & kategori",26f,true))
         val mo = monthly()
         root.addView(tv("Ringkasan 6 bulan terakhir",16f,true))
-        val bars = BarChart(this)
+        val bars = BarChart3D(this)
+        bars.background = solid(Color.WHITE, 22); bars.elevation = dp(4).toFloat()
         bars.setData(Array(mo.size) { mo[it].label }, LongArray(mo.size) { mo[it].inc }, LongArray(mo.size) { mo[it].out })
-        root.addView(bars, LinearLayout.LayoutParams(-1, dp(190)))
+        root.addView(bars, LinearLayout.LayoutParams(-1, dp(260)))
+        root.addView(tv("Geser diagram dengan jari untuk memutar 360°", 12f))
         val lg = LinearLayout(this); lg.orientation = LinearLayout.HORIZONTAL; lg.gravity = Gravity.CENTER_HORIZONTAL
         val l1 = tv("●  Masuk      ", 13f); l1.setTextColor(Color.rgb(22,163,74))
         val l2 = tv("●  Keluar", 13f); l2.setTextColor(Color.rgb(220,38,38))
         lg.addView(l1); lg.addView(l2)
         root.addView(lg)
         val ex = tv("Penjelasan ringkasan\n\n" + explain(mo), 14f)
-        ex.setPadding(dp(14), dp(12), dp(14), dp(12)); ex.setBackgroundColor(Color.rgb(255,251,235))
+        ex.setPadding(dp(14), dp(12), dp(14), dp(12)); ex.background = solid(Color.rgb(255,251,235), 16)
         val ep = LinearLayout.LayoutParams(-1, -2); ep.topMargin = dp(8)
         root.addView(ex, ep)
         val h2 = tv("Pengeluaran per kategori", 16f, true); h2.setPadding(0, dp(16), 0, 8)
@@ -264,8 +365,8 @@ class MainActivity : android.app.Activity() {
         else root.addView(tv("Tahan lama pada transaksi untuk menghapus.", 12f))
         for (t in txs.asReversed()) root.addView(txRow(t))
 
-        val back=Button(this); back.text="Kembali"; ico(back, R.drawable.ic_back); back.setOnClickListener { showDashboard(forward = false) }
-        root.addView(back)
+        val back=Button(this); back.text="Kembali"; ico(back, R.drawable.ic_back); styleBtn(back); back.setOnClickListener { showDashboard(forward = false) }
+        root.addView(back, mlp())
         show(scrolled(root), forward, animate)
     }
 
@@ -476,5 +577,190 @@ private class BarChart(ctx: Context) : AnimatedView(ctx) {
             c.drawRect(cx + d, bottom - hOut, cx + bw + d, bottom, pOut)
             c.drawText(labels[k], cx, height - 6 * d, txt)
         }
+    }
+}
+
+// Diagram batang 3D: seret dengan jari untuk memutar bebas 360 derajat (putaran + kemiringan), ada inersia.
+// Digambar manual dengan proyeksi perspektif; buffer dialokasikan sekali sehingga onDraw tanpa alokasi.
+private class BarChart3D(ctx: Context) : AnimatedView(ctx) {
+    private val d = ctx.resources.displayMetrics.density
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val floorP = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val path = Path()
+    private var labels = arrayOf<String>()
+    private var ins = LongArray(0)
+    private var outs = LongArray(0)
+    private var max = 1f
+    private var yaw = 28f
+    private var pitch = -24f
+    private var vYaw = 0f
+    private var vPitch = 0f
+    private var lx = 0f
+    private var ly = 0f
+    private var tCy = 1f
+    private var tSy = 0f
+    private var tCp = 1f
+    private var tSp = 0f
+    private var tCx = 0f
+    private var tCyc = 0f
+    private var tS = 1f
+    private val px = FloatArray(112)
+    private val py = FloatArray(112)
+    private val pz = FloatArray(112)
+    private val keys = FloatArray(72)
+    private val order = IntArray(72)
+    private val nz = FloatArray(6)
+    private val shade = FloatArray(6)
+    private val faceIdx = arrayOf(
+        intArrayOf(0, 1, 5, 4), intArrayOf(2, 3, 7, 6), intArrayOf(0, 2, 6, 4),
+        intArrayOf(1, 3, 7, 5), intArrayOf(0, 1, 3, 2), intArrayOf(4, 5, 7, 6)
+    )
+    private val wnx = floatArrayOf(0f, 0f, -1f, 1f, 0f, 0f)
+    private val wny = floatArrayOf(-1f, 1f, 0f, 0f, 0f, 0f)
+    private val wnz = floatArrayOf(0f, 0f, 0f, 0f, -1f, 1f)
+    private val colorIn = Color.rgb(22, 163, 74)
+    private val colorOut = Color.rgb(239, 68, 68)
+
+    private val spin = object : Runnable {
+        override fun run() {
+            yaw += vYaw; pitch += vPitch
+            vYaw *= 0.94f; vPitch *= 0.94f
+            invalidate()
+            if (abs(vYaw) + abs(vPitch) > 0.05f) postOnAnimation(this)
+        }
+    }
+
+    init {
+        fill.style = Paint.Style.FILL
+        floorP.style = Paint.Style.FILL; floorP.color = Color.argb(60, 100, 116, 139)
+        txt.color = Color.rgb(71, 85, 105); txt.textSize = 12 * d; txt.textAlign = Paint.Align.CENTER
+    }
+
+    fun setData(l: Array<String>, i: LongArray, o: LongArray) {
+        labels = l; ins = i; outs = o
+        max = maxOf(1L, ins.maxOrNull() ?: 0L, outs.maxOrNull() ?: 0L).toFloat()
+    }
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                removeCallbacks(spin)
+                lx = e.x; ly = e.y; vYaw = 0f; vPitch = 0f
+            }
+            MotionEvent.ACTION_MOVE -> {
+                vYaw = -(e.x - lx) * 0.5f; vPitch = -(e.y - ly) * 0.4f
+                lx = e.x; ly = e.y
+                yaw += vYaw; pitch += vPitch
+                invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                postOnAnimation(spin)
+            }
+        }
+        return true
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(spin)
+        super.onDetachedFromWindow()
+    }
+
+    private fun proj(i: Int, wx: Float, wy: Float, wz: Float) {
+        val x1 = wx * tCy + wz * tSy
+        val z1 = -wx * tSy + wz * tCy
+        val y2 = wy * tCp - z1 * tSp
+        val z2 = wy * tSp + z1 * tCp
+        val k = 22f / (22f + z2)
+        px[i] = tCx + x1 * k * tS
+        py[i] = tCyc - y2 * k * tS
+        pz[i] = z2
+    }
+
+    override fun onDraw(c: Canvas) {
+        val n = labels.size
+        if (n == 0) return
+        val ry = Math.toRadians(yaw.toDouble()).toFloat()
+        val rp = Math.toRadians(pitch.toDouble()).toFloat()
+        tCy = cos(ry); tSy = sin(ry); tCp = cos(rp); tSp = sin(rp)
+        tCx = width / 2f; tCyc = height / 2f
+        tS = minOf(width / 8.6f, height / 6.6f)
+
+        // normal tiap sisi setelah diputar + pencahayaan
+        for (f in 0 until 6) {
+            val x1 = wnx[f] * tCy + wnz[f] * tSy
+            val z1 = -wnx[f] * tSy + wnz[f] * tCy
+            val y2 = wny[f] * tCp - z1 * tSp
+            val z2 = wny[f] * tSp + z1 * tCp
+            nz[f] = z2
+            shade[f] = 0.5f + 0.5f * maxOf(0f, x1 * -0.4f + y2 * 0.7f + z2 * -0.6f)
+        }
+
+        // lantai dan label bulan
+        val fw = n * 1.1f / 2f + 0.3f
+        proj(96, -fw, -1.4f, -1.5f); proj(97, fw, -1.4f, -1.5f)
+        proj(98, fw, -1.4f, 1.5f); proj(99, -fw, -1.4f, 1.5f)
+        for (k in 0 until n) proj(100 + k, (k - (n - 1) / 2f) * 1.1f, -1.4f, -1.7f)
+        path.reset()
+        path.moveTo(px[96], py[96]); path.lineTo(px[97], py[97]); path.lineTo(px[98], py[98]); path.lineTo(px[99], py[99])
+        path.close()
+        c.drawPath(path, floorP)
+
+        // sudut tiap balok (baris depan = masuk, baris belakang = keluar)
+        val total = 2 * n
+        for (b in 0 until total) {
+            val k = if (b < n) b else b - n
+            val v = if (b < n) ins[k] else outs[k]
+            val h = 3.2f * (v / max) * progress
+            val xa = (k - (n - 1) / 2f) * 1.1f - 0.38f
+            val xb = xa + 0.76f
+            val za = (if (b < n) -0.75f else 0.75f) - 0.4f
+            val zb = za + 0.8f
+            for (i in 0 until 8) {
+                val wx = if (i and 1 != 0) xb else xa
+                val wy = if (i and 2 != 0) h - 1.4f else -1.4f
+                val wz = if (i and 4 != 0) zb else za
+                proj(b * 8 + i, wx, wy, wz)
+            }
+        }
+
+        // kumpulkan sisi yang menghadap kamera, urutkan dari terjauh (painter's algorithm)
+        var cnt = 0
+        for (b in 0 until total) {
+            for (f in 0 until 6) {
+                if (nz[f] >= 0f) continue
+                val fi = faceIdx[f]
+                val base = b * 8
+                keys[cnt] = (pz[base + fi[0]] + pz[base + fi[1]] + pz[base + fi[2]] + pz[base + fi[3]]) / 4f
+                order[cnt] = b * 6 + f
+                var j = cnt
+                while (j > 0 && keys[j - 1] < keys[j]) {
+                    val tk = keys[j]; keys[j] = keys[j - 1]; keys[j - 1] = tk
+                    val to = order[j]; order[j] = order[j - 1]; order[j - 1] = to
+                    j--
+                }
+                cnt++
+            }
+        }
+        for (q in 0 until cnt) {
+            val id = order[q]
+            val b = id / 6
+            val f = id % 6
+            val fi = faceIdx[f]
+            val base = b * 8
+            path.reset()
+            path.moveTo(px[base + fi[0]], py[base + fi[0]])
+            path.lineTo(px[base + fi[1]], py[base + fi[1]])
+            path.lineTo(px[base + fi[2]], py[base + fi[2]])
+            path.lineTo(px[base + fi[3]], py[base + fi[3]])
+            path.close()
+            val col = if (b < n) colorIn else colorOut
+            val sh = shade[f]
+            fill.color = Color.rgb((Color.red(col) * sh).toInt(), (Color.green(col) * sh).toInt(), (Color.blue(col) * sh).toInt())
+            c.drawPath(path, fill)
+        }
+        for (k in 0 until n) c.drawText(labels[k], px[100 + k], py[100 + k], txt)
     }
 }
