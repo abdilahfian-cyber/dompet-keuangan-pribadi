@@ -3,15 +3,26 @@ package com.dompet.keuangan
 import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
+import android.graphics.Matrix
 import android.graphics.Path
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.media.ExifInterface
+import android.net.Uri
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ViewOutlineProvider
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
@@ -20,6 +31,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
+import java.io.File
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.cos
@@ -40,6 +52,8 @@ class MainActivity : android.app.Activity() {
         Color.rgb(37,99,235), Color.rgb(249,115,22), Color.rgb(22,163,74), Color.rgb(147,51,234),
         Color.rgb(219,39,119), Color.rgb(13,148,136), Color.rgb(202,138,4), Color.rgb(100,116,139)
     )
+    private var judul = "Dompet"
+    private var bgBitmap: Bitmap? = null
     private var saldo = 0L
     private var masuk = 0L
     private var keluar = 0L
@@ -58,7 +72,9 @@ class MainActivity : android.app.Activity() {
         super.onCreate(savedInstanceState)
         load(); recalc()
         container = FrameLayout(this)
-        container.setBackgroundColor(Color.WHITE)
+        judul = prefs.getString("judul", "Dompet") ?: "Dompet"
+        loadBackground()
+        applyBackground()
         setContentView(container)
         showDashboard(animate = false)
     }
@@ -136,14 +152,12 @@ class MainActivity : android.app.Activity() {
     private fun page(): LinearLayout {
         val root=LinearLayout(this); root.orientation=LinearLayout.VERTICAL
         root.setPadding(dp(16), dp(24), dp(16), dp(24))
-        root.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.rgb(224,242,254), Color.rgb(250,245,255)))
         return root
     }
 
     private fun scrolled(root: View): ScrollView {
         val s = ScrollView(this)
         s.isFillViewport = true
-        s.setBackgroundColor(Color.rgb(224,242,254))
         s.addView(root)
         if (root is LinearLayout) {
             for (i in 0 until root.childCount) {
@@ -235,7 +249,7 @@ class MainActivity : android.app.Activity() {
         head.setPadding(dp(20), dp(18), dp(20), dp(18))
         head.background = bg(Color.rgb(79,70,229), Color.rgb(14,165,233), 24)
         head.elevation = dp(6).toFloat()
-        val h1 = tv("Dompet", 30f, true); h1.setTextColor(Color.WHITE)
+        val h1 = tv(judul, 30f, true); h1.setTextColor(Color.WHITE)
         val h2 = tv("Keuangan pribadi • offline-first", 14f); h2.setTextColor(Color.rgb(224,231,255))
         head.addView(h1); head.addView(h2)
         root.addView(head, mlp())
@@ -272,11 +286,148 @@ class MainActivity : android.app.Activity() {
 
         root.addView(menuBtn("Tambah transaksi", R.drawable.ic_add) { showTransaction() }, mlp())
         root.addView(menuBtn("Laporan, ringkasan & kategori", R.drawable.ic_chart) { showReport() }, mlp())
+        root.addView(menuBtn("Pengaturan", R.drawable.ic_settings) { showSettings() }, mlp())
         root.addView(menuBtn("Reset data", R.drawable.ic_trash) {
             AlertDialog.Builder(this).setMessage("Hapus semua transaksi?")
                 .setPositiveButton("Hapus") { _, _ -> txs.clear(); persist(); recalc(); showDashboard() }
                 .setNegativeButton("Batal", null).show()
         }, mlp())
+        show(scrolled(root), forward, animate)
+    }
+
+    // ---------- Latar belakang (foto dari galeri) ----------
+    private fun loadBackground() {
+        val f = File(filesDir, "bg.jpg")
+        bgBitmap = if (f.exists()) BitmapFactory.decodeFile(f.path) else null
+    }
+
+    private fun applyBackground() {
+        val b = bgBitmap
+        if (b != null) {
+            container.background = LayerDrawable(arrayOf<Drawable>(
+                BitmapDrawable(resources, b), ColorDrawable(Color.argb(95, 255, 255, 255))))
+        } else {
+            container.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.rgb(224,242,254), Color.rgb(250,245,255)))
+        }
+    }
+
+    private fun resetBackground() {
+        File(filesDir, "bg.jpg").delete()
+        bgBitmap = null
+        applyBackground()
+    }
+
+    // Foto dipotong tengah sesuai rasio layar, diputar sesuai EXIF, lalu disalin ke penyimpanan aplikasi
+    private fun importBackground(uri: Uri): Boolean {
+        return try {
+            val opt = BitmapFactory.Options(); opt.inJustDecodeBounds = true
+            contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, opt) }
+            val m = resources.displayMetrics
+            val tw = minOf(m.widthPixels, 1080)
+            val th = tw * m.heightPixels / m.widthPixels
+            var sample = 1
+            while (opt.outWidth / (sample * 2) >= tw && opt.outHeight / (sample * 2) >= th) sample *= 2
+            val o2 = BitmapFactory.Options(); o2.inSampleSize = sample
+            var bmp = contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, o2) } ?: return false
+            val rot = try {
+                contentResolver.openInputStream(uri).use { st ->
+                    when (ExifInterface(st!!).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                        else -> 0f
+                    }
+                }
+            } catch (e: Throwable) { 0f }
+            if (rot != 0f) {
+                val mx = Matrix(); mx.postRotate(rot)
+                bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
+            }
+            val ratio = tw.toFloat() / th
+            var cw = bmp.width
+            var ch = (cw / ratio).toInt()
+            if (ch > bmp.height) { ch = bmp.height; cw = (ch * ratio).toInt() }
+            val crop = Bitmap.createBitmap(bmp, (bmp.width - cw) / 2, (bmp.height - ch) / 2, cw, ch)
+            val out = Bitmap.createScaledBitmap(crop, tw, th, true)
+            File(filesDir, "bg.jpg").outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 88, it) }
+            bgBitmap = out
+            true
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 1001 && resultCode == RESULT_OK) {
+            val uri = data?.data
+            if (uri != null && importBackground(uri)) {
+                applyBackground()
+                Toast.makeText(this, "Latar belakang diperbarui", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Foto tidak dapat dibuka", Toast.LENGTH_SHORT).show()
+            }
+            showSettings(animate = false)
+        }
+    }
+
+    // ---------- Pengaturan: judul dan latar belakang ----------
+    private fun showSettings(forward: Boolean = true, animate: Boolean = true) {
+        onDashboard = false
+        val root = page()
+        root.addView(tv("Pengaturan", 26f, true))
+
+        val c1 = LinearLayout(this); c1.orientation = LinearLayout.VERTICAL
+        c1.setPadding(dp(16), dp(12), dp(16), dp(12))
+        c1.background = solid(Color.WHITE, 22); c1.elevation = dp(4).toFloat()
+        c1.addView(tv("Judul di bagian atas", 17f, true))
+        val title = EditText(this); title.setText(judul); title.hint = "Contoh: Dompet Abdilah"
+        title.setSingleLine()
+        c1.addView(title)
+        val saveT = Button(this); saveT.text = "Simpan judul"; styleBtn(saveT); ico(saveT, R.drawable.ic_check)
+        saveT.setOnClickListener {
+            judul = title.text.toString().trim().ifEmpty { "Dompet" }
+            prefs.edit().putString("judul", judul).apply()
+            Toast.makeText(this, "Judul tersimpan", Toast.LENGTH_SHORT).show()
+        }
+        c1.addView(saveT, mlp())
+        root.addView(c1, mlp())
+
+        val c2 = LinearLayout(this); c2.orientation = LinearLayout.VERTICAL
+        c2.setPadding(dp(16), dp(12), dp(16), dp(12))
+        c2.background = solid(Color.WHITE, 22); c2.elevation = dp(4).toFloat()
+        c2.addView(tv("Latar belakang", 17f, true))
+        val prev = ImageView(this)
+        prev.scaleType = ImageView.ScaleType.CENTER_CROP
+        prev.background = bg(Color.rgb(224,242,254), Color.rgb(250,245,255), 16)
+        prev.outlineProvider = ViewOutlineProvider.BACKGROUND
+        prev.clipToOutline = true
+        bgBitmap?.let { prev.setImageBitmap(it) }
+        c2.addView(prev, LinearLayout.LayoutParams(-1, dp(150)))
+        val pick = Button(this); pick.text = "Pilih foto dari galeri"; styleBtn(pick); ico(pick, R.drawable.ic_image)
+        pick.setOnClickListener {
+            val i = Intent(Intent.ACTION_GET_CONTENT)
+            i.type = "image/*"
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            startActivityForResult(Intent.createChooser(i, "Pilih foto latar"), 1001)
+        }
+        c2.addView(pick, mlp())
+        if (bgBitmap != null) {
+            val clr = Button(this); clr.text = "Kembalikan latar bawaan"; styleBtn(clr); ico(clr, R.drawable.ic_trash)
+            clr.setOnClickListener {
+                resetBackground()
+                Toast.makeText(this, "Latar bawaan dipulihkan", Toast.LENGTH_SHORT).show()
+                showSettings(animate = false)
+            }
+            c2.addView(clr, mlp())
+        }
+        root.addView(c2, mlp())
+
+        val back = Button(this); back.text = "Kembali"; ico(back, R.drawable.ic_back); styleBtn(back)
+        back.setOnClickListener { showDashboard(forward = false) }
+        root.addView(back, mlp())
         show(scrolled(root), forward, animate)
     }
 
