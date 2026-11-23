@@ -20,6 +20,7 @@ import java.util.*
 
 class MainActivity : android.app.Activity() {
     private class Tx(val out: Boolean, val amount: Long, val cat: String, val note: String, val time: Long)
+    private class Mo(val label: String, val inc: Long, val out: Long)
 
     private lateinit var container: FrameLayout
     private var current: View? = null
@@ -40,6 +41,11 @@ class MainActivity : android.app.Activity() {
         NumberFormat.getCurrencyInstance(Locale("id","ID")).format(v).replace(",00","")
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun ico(v: TextView, res: Int) {
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(res, 0, 0, 0)
+        v.compoundDrawablePadding = dp(10)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,12 +145,14 @@ class MainActivity : android.app.Activity() {
         val balance=tv("Saldo\n${money(saldo)}",25f,true)
         balance.setPadding(18,22,18,22)
         balance.setBackgroundColor(Color.rgb(239,246,255))
+        ico(balance, R.drawable.ic_wallet)
         root.addView(balance)
 
         val grid=LinearLayout(this); grid.orientation=LinearLayout.HORIZONTAL
         val income=tv("Masuk\n${money(masuk)}",16f,true)
         val expense=tv("Keluar\n${money(keluar)}",16f,true)
         income.setPadding(12,18,12,18); expense.setPadding(12,18,12,18)
+        ico(income, R.drawable.ic_in); ico(expense, R.drawable.ic_out)
         grid.addView(income,LinearLayout.LayoutParams(0,-2,1f))
         grid.addView(expense,LinearLayout.LayoutParams(0,-2,1f))
         root.addView(grid)
@@ -158,13 +166,13 @@ class MainActivity : android.app.Activity() {
         rp.gravity = Gravity.CENTER_HORIZONTAL; rp.topMargin = dp(8); rp.bottomMargin = dp(8)
         root.addView(ring, rp)
 
-        val add=Button(this); add.text="+ Tambah transaksi"; add.setOnClickListener { showTransaction() }
+        val add=Button(this); add.text="Tambah transaksi"; ico(add, R.drawable.ic_add); add.setOnClickListener { showTransaction() }
         root.addView(add)
 
-        val report=Button(this); report.text="Lihat laporan & kategori"; report.setOnClickListener { showReport() }
+        val report=Button(this); report.text="Laporan, ringkasan & kategori"; ico(report, R.drawable.ic_chart); report.setOnClickListener { showReport() }
         root.addView(report)
 
-        val reset=Button(this); reset.text="Reset data"; reset.setOnClickListener {
+        val reset=Button(this); reset.text="Reset data"; ico(reset, R.drawable.ic_trash); reset.setOnClickListener {
             AlertDialog.Builder(this).setMessage("Hapus semua transaksi?")
                 .setPositiveButton("Hapus") { _, _ -> txs.clear(); persist(); recalc(); showDashboard() }
                 .setNegativeButton("Batal", null).show()
@@ -191,7 +199,7 @@ class MainActivity : android.app.Activity() {
         root.addView(category)
         val note=EditText(this); note.hint="Catatan"
         root.addView(note)
-        val saveBtn=Button(this); saveBtn.text="Simpan"
+        val saveBtn=Button(this); saveBtn.text="Simpan"; ico(saveBtn, R.drawable.ic_check)
         saveBtn.setOnClickListener {
             val n=amount.text.toString().toLongOrNull()
             if(n==null || n<=0){ amount.error="Masukkan nominal yang benar"; return@setOnClickListener }
@@ -201,7 +209,7 @@ class MainActivity : android.app.Activity() {
             Toast.makeText(this,"Transaksi tersimpan",Toast.LENGTH_SHORT).show()
         }
         root.addView(saveBtn)
-        val back=Button(this); back.text="Batal"; back.setOnClickListener { showDashboard(forward = false) }
+        val back=Button(this); back.text="Batal"; ico(back, R.drawable.ic_close); back.setOnClickListener { showDashboard(forward = false) }
         root.addView(back)
         show(scrolled(root), true, true)
     }
@@ -211,7 +219,22 @@ class MainActivity : android.app.Activity() {
         onDashboard = false
         val root = page()
         root.addView(tv("Laporan & kategori",26f,true))
-        root.addView(tv("Pengeluaran per kategori",16f))
+        val mo = monthly()
+        root.addView(tv("Ringkasan 6 bulan terakhir",16f,true))
+        val bars = BarChart(this)
+        bars.setData(Array(mo.size) { mo[it].label }, LongArray(mo.size) { mo[it].inc }, LongArray(mo.size) { mo[it].out })
+        root.addView(bars, LinearLayout.LayoutParams(-1, dp(190)))
+        val lg = LinearLayout(this); lg.orientation = LinearLayout.HORIZONTAL; lg.gravity = Gravity.CENTER_HORIZONTAL
+        val l1 = tv("●  Masuk      ", 13f); l1.setTextColor(Color.rgb(22,163,74))
+        val l2 = tv("●  Keluar", 13f); l2.setTextColor(Color.rgb(220,38,38))
+        lg.addView(l1); lg.addView(l2)
+        root.addView(lg)
+        val ex = tv("Penjelasan ringkasan\n\n" + explain(mo), 14f)
+        ex.setPadding(dp(14), dp(12), dp(14), dp(12)); ex.setBackgroundColor(Color.rgb(255,251,235))
+        val ep = LinearLayout.LayoutParams(-1, -2); ep.topMargin = dp(8)
+        root.addView(ex, ep)
+        val h2 = tv("Pengeluaran per kategori", 16f, true); h2.setPadding(0, dp(16), 0, 8)
+        root.addView(h2)
 
         val sums = LinkedHashMap<String, Long>()
         for (t in txs) if (t.out) sums[t.cat] = (sums[t.cat] ?: 0L) + t.amount
@@ -241,9 +264,56 @@ class MainActivity : android.app.Activity() {
         else root.addView(tv("Tahan lama pada transaksi untuk menghapus.", 12f))
         for (t in txs.asReversed()) root.addView(txRow(t))
 
-        val back=Button(this); back.text="Kembali"; back.setOnClickListener { showDashboard(forward = false) }
+        val back=Button(this); back.text="Kembali"; ico(back, R.drawable.ic_back); back.setOnClickListener { showDashboard(forward = false) }
         root.addView(back)
         show(scrolled(root), forward, animate)
+    }
+
+    private fun monthly(): List<Mo> {
+        val names = arrayOf("Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des")
+        val cal = Calendar.getInstance()
+        val nowIdx = cal.get(Calendar.YEAR) * 12 + cal.get(Calendar.MONTH)
+        val inc = LongArray(6); val out = LongArray(6)
+        for (t in txs) {
+            cal.timeInMillis = t.time
+            val b = 5 - (nowIdx - (cal.get(Calendar.YEAR) * 12 + cal.get(Calendar.MONTH)))
+            if (b in 0..5) { if (t.out) out[b] += t.amount else inc[b] += t.amount }
+        }
+        return List(6) { Mo(names[(nowIdx - 5 + it) % 12], inc[it], out[it]) }
+    }
+
+    // Penjelasan otomatis dari hasil ringkasan
+    private fun explain(mo: List<Mo>): String {
+        if (txs.isEmpty()) return "Belum ada transaksi. Catat pemasukan dan pengeluaran pertama Anda untuk melihat ringkasan."
+        val sb = StringBuilder()
+        if (masuk > 0) {
+            val r = Math.round(keluar * 100f / masuk)
+            val nilai = when {
+                r <= 50 -> "sangat sehat"
+                r <= 80 -> "cukup sehat"
+                r <= 100 -> "mendekati batas, perlu dikendalikan"
+                else -> "melebihi pemasukan (defisit)"
+            }
+            sb.append("• Pengeluaran mencapai $r% dari total pemasukan: kondisi $nilai.\n")
+        } else {
+            sb.append("• Belum ada pemasukan tercatat, rasio pengeluaran belum bisa dihitung.\n")
+        }
+        if (saldo >= 0) sb.append("• Sisa dana saat ini ${money(saldo)}.\n")
+        else sb.append("• Saldo negatif ${money(-saldo)}: pengeluaran lebih besar dari pemasukan.\n")
+        val top = txs.filter { it.out }.groupBy { it.cat }.mapValues { e -> e.value.sumOf { it.amount } }.maxByOrNull { it.value }
+        if (top != null && keluar > 0) {
+            val p = Math.round(top.value * 100f / keluar)
+            sb.append("• Pengeluaran terbesar: ${top.key} ($p% dari total pengeluaran, ${money(top.value)})")
+            if (p >= 40) sb.append(". Porsinya dominan, cek apakah bisa dihemat.\n") else sb.append(".\n")
+        }
+        val cur = mo[5].out; val prev = mo[4].out
+        if (prev > 0) {
+            val ch = Math.round((cur - prev) * 100f / prev)
+            if (ch > 0) sb.append("• Pengeluaran bulan ini naik $ch% dibanding bulan lalu.\n")
+            else if (ch < 0) sb.append("• Pengeluaran bulan ini turun ${-ch}% dibanding bulan lalu.\n")
+            else sb.append("• Pengeluaran bulan ini sama dengan bulan lalu.\n")
+        }
+        return sb.toString().trim()
     }
 
     private fun txRow(t: Tx): View {
@@ -363,5 +433,48 @@ private class DonutChart(ctx: Context) : AnimatedView(ctx) {
             start += sweep
         }
         c.drawText("Pengeluaran", width / 2f, ty, label)
+    }
+}
+
+// Diagram batang berkelompok: pemasukan (hijau) vs pengeluaran (merah) per bulan
+private class BarChart(ctx: Context) : AnimatedView(ctx) {
+    private val pIn = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pOut = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val axis = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var labels = arrayOf<String>()
+    private var ins = LongArray(0)
+    private var outs = LongArray(0)
+    private var max = 1f
+    private val d = ctx.resources.displayMetrics.density
+
+    init {
+        pIn.color = Color.rgb(22,163,74); pOut.color = Color.rgb(220,38,38)
+        axis.color = Color.rgb(203,213,225); axis.strokeWidth = 1.5f * d
+        txt.color = Color.rgb(100,116,139); txt.textSize = 12 * d; txt.textAlign = Paint.Align.CENTER
+    }
+
+    fun setData(l: Array<String>, i: LongArray, o: LongArray) {
+        labels = l; ins = i; outs = o
+        max = maxOf(1L, ins.maxOrNull() ?: 0L, outs.maxOrNull() ?: 0L).toFloat()
+    }
+
+    override fun onDraw(c: Canvas) {
+        val n = labels.size
+        if (n == 0) return
+        val left = 8 * d
+        val top = 8 * d
+        val bottom = height - 24 * d
+        val slot = (width - 2 * left) / n
+        val bw = slot * 0.32f
+        c.drawLine(left, bottom, width - left, bottom, axis)
+        for (k in 0 until n) {
+            val cx = left + slot * (k + 0.5f)
+            val hIn = (bottom - top) * (ins[k] / max) * progress
+            val hOut = (bottom - top) * (outs[k] / max) * progress
+            c.drawRect(cx - bw - d, bottom - hIn, cx - d, bottom, pIn)
+            c.drawRect(cx + d, bottom - hOut, cx + bw + d, bottom, pOut)
+            c.drawText(labels[k], cx, height - 6 * d, txt)
+        }
     }
 }
