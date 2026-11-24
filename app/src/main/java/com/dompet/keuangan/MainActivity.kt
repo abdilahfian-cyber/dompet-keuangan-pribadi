@@ -10,12 +10,17 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Shader
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.text.method.DigitsKeyListener
+import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -28,6 +33,7 @@ import android.view.MotionEvent
 import android.view.ViewOutlineProvider
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.*
 import org.json.JSONArray
@@ -57,12 +63,31 @@ class MainActivity : android.app.Activity() {
     )
     private var judul = "Dompet"
     private var bgBitmap: Bitmap? = null
+    private lateinit var aurora: AuroraView
+    private val moneyFmt = NumberFormat.getCurrencyInstance(Locale("id","ID"))
+    private val updFmt = SimpleDateFormat("EEEE, d MMMM yyyy • HH:mm", Locale("id","ID"))
+    private val clockTimeFmt = SimpleDateFormat("HH:mm:ss", Locale("id","ID"))
+    private val clockDateFmt = SimpleDateFormat("EEE, d MMM yyyy", Locale("id","ID"))
+    private val clockHandler = Handler(Looper.getMainLooper())
+    private var clockTime: TextView? = null
+    private var clockDate: TextView? = null
+    private val tick = object : Runnable {
+        override fun run() {
+            val t = clockTime ?: return
+            val d = clockDate ?: return
+            if (!onDashboard) return
+            val now = Date()
+            t.text = clockTimeFmt.format(now)
+            d.text = clockDateFmt.format(now)
+            clockHandler.postDelayed(this, 1000)
+        }
+    }
     private var saldo = 0L
     private var masuk = 0L
     private var keluar = 0L
 
     private fun money(v: Long): String =
-        NumberFormat.getCurrencyInstance(Locale("id","ID")).format(v).replace(",00","")
+        moneyFmt.format(v).replace(",00","")
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -76,15 +101,32 @@ class MainActivity : android.app.Activity() {
         load(); recalc()
         container = FrameLayout(this)
         judul = prefs.getString("judul", "Dompet") ?: "Dompet"
+        aurora = AuroraView(this)
         loadBackground()
         applyBackground()
-        setContentView(container)
+        val windowRoot = FrameLayout(this)
+        windowRoot.addView(aurora, FrameLayout.LayoutParams(-1, -1))
+        windowRoot.addView(container, FrameLayout.LayoutParams(-1, -1))
+        setContentView(windowRoot)
         showDashboard(animate = false)
     }
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (!onDashboard) showDashboard(forward = false) else super.onBackPressed()
+    }
+
+    override fun onPause() {
+        clockHandler.removeCallbacks(tick)
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (onDashboard && clockTime != null) {
+            clockHandler.removeCallbacks(tick)
+            clockHandler.post(tick)
+        }
     }
 
     // ---------- Data: riwayat transaksi disimpan sebagai JSON di SharedPreferences ----------
@@ -108,7 +150,7 @@ class MainActivity : android.app.Activity() {
     private fun persist() {
         val a = JSONArray()
         for (t in txs) a.put(JSONObject().put("o", t.out).put("a", t.amount).put("c", t.cat).put("n", t.note).put("t", t.time))
-        prefs.edit().putString("tx", a.toString()).apply()
+        prefs.edit().putString("tx", a.toString()).putLong("upd", System.currentTimeMillis()).apply()
     }
 
     private fun recalc() {
@@ -185,6 +227,14 @@ class MainActivity : android.app.Activity() {
         return g
     }
 
+    private fun glass(r: Int): GradientDrawable {
+        val g = GradientDrawable()
+        g.setColor(Color.argb(228, 255, 255, 255))
+        g.setStroke(dp(1), Color.argb(200, 226, 232, 240))
+        g.cornerRadius = dp(r).toFloat()
+        return g
+    }
+
     private fun mlp(): LinearLayout.LayoutParams {
         val p = LinearLayout.LayoutParams(-1, -2)
         p.topMargin = dp(8); p.bottomMargin = dp(8)
@@ -196,8 +246,8 @@ class MainActivity : android.app.Activity() {
         b.textSize = 16f
         b.setTextColor(Color.rgb(30,41,59))
         b.setPadding(dp(18), dp(14), dp(18), dp(14))
-        b.background = solid(Color.WHITE, 20)
-        b.elevation = dp(4).toFloat()
+        b.background = glass(20)
+        b.elevation = dp(3).toFloat()
     }
 
     private fun menuBtn(text: String, icon: Int, onClick: () -> Unit): Button {
@@ -244,33 +294,97 @@ class MainActivity : android.app.Activity() {
     }
 
     // ---------- Dashboard ----------
+    private fun greeting(): String {
+        val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        return when {
+            h < 11 -> "Selamat pagi"
+            h < 15 -> "Selamat siang"
+            h < 18 -> "Selamat sore"
+            else -> "Selamat malam"
+        }
+    }
+
+    private fun lastUpdate(): String {
+        var t = prefs.getLong("upd", 0L)
+        if (t == 0L) for (x in txs) if (x.time > t) t = x.time
+        return if (t == 0L) "Belum ada data" else updFmt.format(Date(t))
+    }
+
+    // Angka naik perlahan dari 0 ke nilai akhir
+    private fun countUp(t: TextView, target: Long, fmt: (Long) -> String) {
+        t.text = fmt(0)
+        val a = ValueAnimator.ofFloat(0f, 1f)
+        a.duration = 900; a.startDelay = 250; a.interpolator = DecelerateInterpolator(2f)
+        a.addUpdateListener { t.text = fmt((target * (it.animatedValue as Float)).toLong()) }
+        a.start()
+    }
+
+    // Titik berdenyut lembut (berhenti otomatis saat view dilepas)
+    private fun pulse(v: View) {
+        val a = ValueAnimator.ofFloat(1f, 0.25f)
+        a.duration = 1100; a.repeatMode = ValueAnimator.REVERSE; a.repeatCount = ValueAnimator.INFINITE
+        a.addUpdateListener { v.alpha = it.animatedValue as Float }
+        v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(x: View) { a.start() }
+            override fun onViewDetachedFromWindow(x: View) { a.cancel() }
+        })
+    }
+
     private fun showDashboard(forward: Boolean = false, animate: Boolean = true) {
         onDashboard = true
         val root = page()
+        val grey = Color.rgb(100,116,139)
 
-        val head = LinearLayout(this); head.orientation = LinearLayout.VERTICAL
-        head.setPadding(dp(20), dp(18), dp(20), dp(18))
-        head.background = bg(Color.rgb(79,70,229), Color.rgb(14,165,233), 24)
-        head.elevation = dp(6).toFloat()
-        val h1 = tv(judul, 30f, true); h1.setTextColor(Color.WHITE)
-        val h2 = tv("Keuangan pribadi • offline-first", 14f); h2.setTextColor(Color.rgb(224,231,255))
-        head.addView(h1); head.addView(h2)
+        // header: judul di kiri, tanggal dan jam real time di pojok kanan atas
+        val head = LinearLayout(this); head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val left = LinearLayout(this); left.orientation = LinearLayout.VERTICAL
+        val h1 = tv(judul, 28f, true)
+        val h2 = tv("${greeting()} • keuangan pribadi", 13f); h2.setTextColor(grey)
+        left.addView(h1); left.addView(h2)
+        head.addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+        val clock = LinearLayout(this); clock.orientation = LinearLayout.VERTICAL
+        clock.setPadding(dp(12), dp(8), dp(12), dp(8)); clock.background = glass(16)
+        val ct = tv("", 17f, true); ct.gravity = Gravity.END; ct.setPadding(0, 0, 0, 0)
+        val cd = tv("", 11f); cd.gravity = Gravity.END; cd.setPadding(0, 0, 0, 0); cd.setTextColor(grey)
+        clock.addView(ct); clock.addView(cd)
+        head.addView(clock)
         root.addView(head, mlp())
+        clockTime = ct; clockDate = cd
+        clockHandler.removeCallbacks(tick)
+        clockHandler.post(tick)
 
-        val balance = tv("Saldo\n${money(saldo)}", 25f, true)
-        balance.setTextColor(Color.WHITE); balance.setPadding(dp(18), dp(20), dp(18), dp(20))
-        balance.background = bg(Color.rgb(15,23,42), Color.rgb(67,56,202), 22)
-        ico(balance, R.drawable.ic_wallet); make3d(balance)
-        root.addView(balance, mlp())
+        // kartu saldo utama dengan kilau bergerak dan info waktu update
+        val hero = ShimmerLayout(this); hero.orientation = LinearLayout.VERTICAL
+        hero.setPadding(dp(20), dp(18), dp(20), dp(18))
+        val hg = GradientDrawable(GradientDrawable.Orientation.TL_BR,
+            intArrayOf(Color.rgb(79,70,229), Color.rgb(124,58,237), Color.rgb(14,165,233)))
+        hg.cornerRadius = dp(26).toFloat()
+        hero.background = hg
+        hero.clipToOutline = true; hero.outlineProvider = ViewOutlineProvider.BACKGROUND
+        val hl = tv("Total saldo", 14f); hl.setTextColor(Color.argb(210, 255, 255, 255))
+        val hv = tv("", 32f, true); hv.setTextColor(Color.WHITE)
+        countUp(hv, saldo) { money(it) }
+        val updRow = LinearLayout(this); updRow.orientation = LinearLayout.HORIZONTAL
+        updRow.gravity = Gravity.CENTER_VERTICAL
+        val dot = tv("●", 11f); dot.setTextColor(Color.rgb(74,222,128)); dot.setPadding(0, 0, dp(8), 0)
+        pulse(dot)
+        val ut = tv("Diperbarui: ${lastUpdate()}", 12f); ut.setTextColor(Color.argb(230, 255, 255, 255)); ut.setPadding(0, 0, 0, 0)
+        updRow.addView(dot); updRow.addView(ut)
+        hero.addView(hl); hero.addView(hv); hero.addView(updRow)
+        make3d(hero)
+        root.addView(hero, mlp())
 
         val grid = LinearLayout(this); grid.orientation = LinearLayout.HORIZONTAL
-        val income = tv("Masuk\n${money(masuk)}", 16f, true)
-        val expense = tv("Keluar\n${money(keluar)}", 16f, true)
+        val income = tv("", 16f, true)
+        val expense = tv("", 16f, true)
         income.setTextColor(Color.rgb(22,163,74)); expense.setTextColor(Color.rgb(220,38,38))
         for (v in arrayOf(income, expense)) {
-            v.setPadding(dp(14), dp(16), dp(14), dp(16)); v.background = solid(Color.WHITE, 20); make3d(v)
+            v.setPadding(dp(14), dp(16), dp(14), dp(16)); v.background = glass(22); make3d(v)
         }
         ico(income, R.drawable.ic_in); ico(expense, R.drawable.ic_out)
+        countUp(income, masuk) { "Masuk\n" + money(it) }
+        countUp(expense, keluar) { "Keluar\n" + money(it) }
         val gl = LinearLayout.LayoutParams(0, -2, 1f); gl.rightMargin = dp(6)
         val gr = LinearLayout.LayoutParams(0, -2, 1f); gr.leftMargin = dp(6)
         grid.addView(income, gl); grid.addView(expense, gr)
@@ -278,9 +392,11 @@ class MainActivity : android.app.Activity() {
 
         val sum = LinearLayout(this); sum.orientation = LinearLayout.VERTICAL
         sum.setPadding(dp(16), dp(12), dp(16), dp(12))
-        sum.background = solid(Color.WHITE, 22); sum.elevation = dp(4).toFloat()
+        sum.background = glass(24); sum.elevation = dp(3).toFloat()
         sum.addView(tv("Ringkasan", 19f, true))
         sum.addView(tv("Sisa yang dapat ditabung: ${money((masuk-keluar).coerceAtLeast(0))}", 16f))
+        val su = tv("Terakhir diperbarui: ${lastUpdate()}", 12f); su.setTextColor(grey)
+        sum.addView(su)
         val ring = RingChart(this)
         ring.setTarget(if (masuk > 0) keluar.toFloat() / masuk else 0f)
         val rp = LinearLayout.LayoutParams(dp(180), dp(180)); rp.gravity = Gravity.CENTER_HORIZONTAL; rp.topMargin = dp(8)
@@ -307,11 +423,12 @@ class MainActivity : android.app.Activity() {
     private fun applyBackground() {
         val b = bgBitmap
         if (b != null) {
+            aurora.visibility = View.GONE
             container.background = LayerDrawable(arrayOf<Drawable>(
                 BitmapDrawable(resources, b), ColorDrawable(Color.argb(95, 255, 255, 255))))
         } else {
-            container.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.rgb(224,242,254), Color.rgb(250,245,255)))
+            aurora.visibility = View.VISIBLE
+            container.background = null
         }
     }
 
@@ -1059,5 +1176,101 @@ private class BarChart3D(ctx: Context) : AnimatedView(ctx) {
             c.drawPath(path, fill)
         }
         for (k in 0 until n) c.drawText(labels[k], px[100 + k], py[100 + k], txt)
+    }
+}
+
+// Kartu dengan kilau cahaya yang menyapu perlahan (hanya menggambar satu persegi bergradasi per frame)
+private class ShimmerLayout(ctx: Context) : LinearLayout(ctx) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val m = Matrix()
+    private var shader: LinearGradient? = null
+    private var band = 0f
+    private var phase = 0f
+    private var anim: ValueAnimator? = null
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        band = w * 0.45f
+        shader = LinearGradient(0f, 0f, band, 0f,
+            intArrayOf(Color.argb(0, 255, 255, 255), Color.argb(70, 255, 255, 255), Color.argb(0, 255, 255, 255)),
+            floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+        paint.shader = shader
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 5200; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator()
+            addUpdateListener { phase = it.animatedValue as Float; invalidate() }
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        anim?.cancel()
+        super.onDetachedFromWindow()
+    }
+
+    override fun dispatchDraw(c: Canvas) {
+        super.dispatchDraw(c)
+        val sh = shader ?: return
+        val p = phase / 0.62f
+        if (p > 1f) return
+        m.setSkew(-0.3f, 0f)
+        m.postTranslate(-band + (width + band) * p, 0f)
+        sh.setLocalMatrix(m)
+        c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+    }
+}
+
+// Latar aurora: tiga gumpalan warna lembut yang melayang pelan di belakang semua layar
+private class AuroraView(ctx: Context) : View(ctx) {
+    private val base = Paint()
+    private val blobs = Array(3) { Paint(Paint.ANTI_ALIAS_FLAG) }
+    private val cols = intArrayOf(Color.rgb(99,102,241), Color.rgb(14,165,233), Color.rgb(236,72,153))
+    private val fx = floatArrayOf(1f, 2f, 1f)
+    private val fy = floatArrayOf(1f, 1f, 2f)
+    private val px = floatArrayOf(0f, 2.1f, 4.2f)
+    private val py = floatArrayOf(1f, 3f, 5f)
+    private var r = 1f
+    private var t = 0f
+    private var anim: ValueAnimator? = null
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        base.shader = LinearGradient(0f, 0f, 0f, h.toFloat(), Color.rgb(238,242,255), Color.rgb(250,245,255), Shader.TileMode.CLAMP)
+        r = w * 0.75f
+        for (i in 0 until 3) {
+            val c = cols[i]
+            blobs[i].shader = RadialGradient(0f, 0f, r, Color.argb(90, Color.red(c), Color.green(c), Color.blue(c)),
+                Color.argb(0, Color.red(c), Color.green(c), Color.blue(c)), Shader.TileMode.CLAMP)
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 36000; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator()
+            addUpdateListener { t = it.animatedValue as Float; invalidate() }
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        anim?.cancel()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onDraw(c: Canvas) {
+        c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), base)
+        val tau = 6.2831855f
+        for (i in 0 until 3) {
+            val cx = width * (0.5f + 0.42f * sin(tau * t * fx[i] + px[i]))
+            val cy = height * (0.5f + 0.4f * cos(tau * t * fy[i] + py[i]))
+            c.save()
+            c.translate(cx, cy)
+            c.drawCircle(0f, 0f, r, blobs[i])
+            c.restore()
+        }
     }
 }
