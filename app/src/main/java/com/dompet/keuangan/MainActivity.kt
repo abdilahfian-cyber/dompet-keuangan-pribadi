@@ -11,6 +11,9 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.text.method.DigitsKeyListener
 import android.graphics.Matrix
 import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
@@ -432,34 +435,177 @@ class MainActivity : android.app.Activity() {
     }
 
     // ---------- Tambah transaksi ----------
+    private val dateLong = SimpleDateFormat("EEEE, d MMMM yyyy", Locale("id","ID"))
+
+    // Aturan deteksi kategori dari catatan (urutan = prioritas; yang lebih spesifik di atas)
+    private val outRules = arrayOf(
+        "Servis kendaraan" to arrayOf("servis","service","oli","bengkel","ganti ban","tambal ban","aki","kampas","tune up","cuci motor","cuci mobil","sparepart","spare part"),
+        "Kesehatan" to arrayOf("obat","apotek","dokter","vitamin","klinik","rumah sakit","periksa","medis","suplemen","puskesmas","lab"),
+        "Hiburan" to arrayOf("nonton","bioskop","game","netflix","spotify","youtube","wisata","liburan","konser","karaoke","rekreasi"),
+        "Pendidikan" to arrayOf("buku","kursus","les","spp","ukt","sekolah","kuliah","seminar","pelatihan","alat tulis","fotokopi","print"),
+        "Transportasi" to arrayOf("bensin","pertalite","pertamax","solar","bbm","parkir","tol","ojek","gojek","grab","maxim","taksi","bus","kereta","krl","tiket","travel","angkot"),
+        "Tagihan" to arrayOf("listrik","token","pln","pdam","wifi","internet","indihome","pulsa","kuota","paket data","cicilan","kredit","bpjs","asuransi","pajak","sewa","kos","kontrakan","langganan"),
+        "Kebutuhan pribadi" to arrayOf("sabun","sampo","shampoo","pasta gigi","odol","skincare","parfum","deodoran","baju","celana","sepatu","sandal","potong rambut","cukur","salon","laundry","kosmetik","pakaian","kebutuhan pribadi","tisu"),
+        "Rumah tangga" to arrayOf("gas","elpiji","deterjen","pewangi","sapu","pel","ember","lampu","perabot","renovasi","tukang"),
+        "Sosial & donasi" to arrayOf("sedekah","infak","zakat","donasi","sumbangan","kondangan","amplop","arisan","hadiah"),
+        "Belanja" to arrayOf("belanja","supermarket","alfamart","indomaret","minimarket","shopee","tokopedia","lazada","elektronik","online"),
+        "Makanan & minuman" to arrayOf("nasi","makan","minum","air mineral","kopi","teh","es","bakso","mie","mi","ayam","soto","sate","roti","snack","jajan","warteg","restoran","cafe","kafe","gofood","grabfood","sarapan","galon","gorengan","lauk","sayur","buah","susu","martabak","pecel","geprek","rawon","kue")
+    )
+    private val inRules = arrayOf(
+        "Gaji" to arrayOf("gaji","honor","upah","salary","thr","tunjangan","insentif"),
+        "Bonus" to arrayOf("bonus","komisi","reward"),
+        "Usaha & penjualan" to arrayOf("jual","penjualan","usaha","dagang","untung","laba","omzet","order","orderan","proyek","freelance","jasa"),
+        "Hadiah" to arrayOf("hadiah","angpao","kado","uang saku","warisan"),
+        "Investasi" to arrayOf("bunga","dividen","saham","reksadana","deposito","investasi","emas"),
+        "Pengembalian dana" to arrayOf("refund","cashback","kembalian","pengembalian","reimburse","piutang")
+    )
+
+    private fun detect(note: String, out: Boolean): String? {
+        val text = note.lowercase(Locale("id","ID"))
+        val tokens = text.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        val rules = if (out) outRules else inRules
+        for ((cat, words) in rules) {
+            for (w in words) {
+                val hit = if (w.contains(' ')) text.contains(w)
+                          else tokens.any { it == w || (w.length >= 4 && it.startsWith(w)) }
+                if (hit) return cat
+            }
+        }
+        return null
+    }
+
+    private fun watcher(after: (Editable) -> Unit): TextWatcher = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        override fun afterTextChanged(e: Editable?) { if (e != null) after(e) }
+    }
+
+    private fun cardStyle(v: TextView, sel: Boolean, c: Int, tint: Int) {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(20).toFloat()
+        g.setColor(if (sel) tint else Color.WHITE)
+        g.setStroke(dp(if (sel) 3 else 1), if (sel) c else Color.rgb(203,213,225))
+        v.background = g
+        v.setTextColor(if (sel) c else Color.rgb(30,41,59))
+        v.elevation = dp(if (sel) 16 else 8).toFloat()
+    }
+
     private fun showTransaction() {
         onDashboard = false
         val root = page()
         root.addView(tv("Tambah transaksi",26f,true))
-        val type=Spinner(this)
-        type.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,arrayOf("Uang masuk","Uang keluar"))
-        root.addView(type)
-        val amount=EditText(this); amount.hint="Nominal (Rp)"; amount.inputType=2
-        root.addView(amount)
-        val cats = arrayOf("Makanan","Transport","Belanja","Tagihan","Hiburan","Kesehatan","Gaji","Lainnya")
-        val category=AutoCompleteTextView(this); category.hint="Kategori, contoh: Makanan"
-        category.setAdapter(ArrayAdapter(this,android.R.layout.simple_dropdown_item_1line,cats))
+
+        var tipe = -1          // -1 belum dipilih, 0 uang masuk, 1 uang keluar
+        var manualCat = false  // true jika kategori diketik/diubah sendiri
+        var settingCat = false
+        var fmtBusy = false
+        val catsOut = (outRules.map { it.first } + "Lainnya").toTypedArray()
+        val catsIn = (inRules.map { it.first } + "Lainnya").toTypedArray()
+
+        // dua pilihan timbul
+        fun typeCard(label: String, icon: Int): TextView {
+            val t = tv(label, 16f, true)
+            t.gravity = Gravity.CENTER_HORIZONTAL
+            t.setPadding(dp(8), dp(18), dp(8), dp(18))
+            t.setCompoundDrawablesRelativeWithIntrinsicBounds(0, icon, 0, 0)
+            t.compoundDrawablePadding = dp(6)
+            make3d(t)
+            return t
+        }
+        val cIn = typeCard("Uang masuk", R.drawable.ic_in)
+        val cOut = typeCard("Uang keluar", R.drawable.ic_out)
+        cardStyle(cIn, false, Color.rgb(22,163,74), Color.rgb(220,252,231))
+        cardStyle(cOut, false, Color.rgb(220,38,38), Color.rgb(254,226,226))
+        val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL
+        val pl = LinearLayout.LayoutParams(0, -2, 1f); pl.rightMargin = dp(6)
+        val pr = LinearLayout.LayoutParams(0, -2, 1f); pr.leftMargin = dp(6)
+        row.addView(cIn, pl); row.addView(cOut, pr)
+        root.addView(row, mlp())
+
+        // formulir
+        val form = LinearLayout(this); form.orientation = LinearLayout.VERTICAL
+        form.setPadding(dp(16), dp(12), dp(16), dp(12))
+        form.background = solid(Color.WHITE, 22); form.elevation = dp(4).toFloat()
+        val lock = tv("Pilih uang masuk atau uang keluar terlebih dahulu untuk mengisi.", 13f)
+        lock.setTextColor(Color.rgb(217,119,6))
+        val tgl = tv("Tanggal (otomatis): ${dateLong.format(Date())}", 14f)
+        val amount = EditText(this); amount.hint = "Nominal, contoh: Rp 25.000"
+        amount.keyListener = DigitsKeyListener.getInstance("0123456789.Rp ")
+        val note = EditText(this); note.hint = "Catatan, contoh: beli nasi"
+        val category = AutoCompleteTextView(this); category.hint = "Kategori (otomatis dari catatan)"
         category.threshold = 1
         category.setOnClickListener { category.showDropDown() }
-        root.addView(category)
-        val note=EditText(this); note.hint="Catatan"
-        root.addView(note)
-        val saveBtn=Button(this); saveBtn.text="Simpan"; ico(saveBtn, R.drawable.ic_check); styleBtn(saveBtn)
-        saveBtn.setOnClickListener {
-            val n=amount.text.toString().toLongOrNull()
-            if(n==null || n<=0){ amount.error="Masukkan nominal yang benar"; return@setOnClickListener }
-            val c=category.text.toString().trim().lowercase().replaceFirstChar { it.uppercase() }.ifEmpty { "Lainnya" }
-            txs.add(Tx(type.selectedItemPosition==1, n, c, note.text.toString().trim(), System.currentTimeMillis()))
-            persist(); recalc(); showDashboard(forward = false)
-            Toast.makeText(this,"Transaksi tersimpan",Toast.LENGTH_SHORT).show()
+        val catHint = tv("Kategori terisi otomatis dari catatan.", 12f)
+        catHint.setTextColor(Color.rgb(100,116,139))
+        val saveBtn = Button(this); saveBtn.text = "Simpan"; ico(saveBtn, R.drawable.ic_check); styleBtn(saveBtn)
+        form.addView(lock); form.addView(tgl); form.addView(amount); form.addView(note)
+        form.addView(category); form.addView(catHint); form.addView(saveBtn, mlp())
+        root.addView(form, mlp())
+
+        fun setForm(on: Boolean, anim: Boolean) {
+            for (v in arrayOf<View>(amount, note, category, saveBtn)) {
+                v.isEnabled = on
+                val a = if (on) 1f else 0.4f
+                if (anim) v.animate().alpha(a).setStartDelay(0).setDuration(250).start() else v.alpha = a
+            }
         }
-        root.addView(saveBtn, mlp())
-        val back=Button(this); back.text="Batal"; ico(back, R.drawable.ic_close); styleBtn(back); back.setOnClickListener { showDashboard(forward = false) }
+
+        fun refreshCat() {
+            if (tipe < 0 || manualCat) return
+            val n = note.text.toString().trim()
+            val det = if (n.isEmpty()) null else detect(n, tipe == 1)
+            settingCat = true
+            category.setText(det ?: (if (n.isEmpty()) "" else "Lainnya"), false)
+            settingCat = false
+            catHint.text = when {
+                n.isEmpty() -> "Kategori terisi otomatis dari catatan."
+                det != null -> "Terdeteksi otomatis: $det (bisa diubah)"
+                else -> "Belum dikenali, dimasukkan ke Lainnya. Ketik kategori sendiri jika perlu."
+            }
+        }
+
+        fun selectType(t: Int) {
+            tipe = t
+            cardStyle(cIn, t == 0, Color.rgb(22,163,74), Color.rgb(220,252,231))
+            cardStyle(cOut, t == 1, Color.rgb(220,38,38), Color.rgb(254,226,226))
+            lock.visibility = View.GONE
+            setForm(true, true)
+            category.setAdapter(ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, if (t == 1) catsOut else catsIn))
+            manualCat = false
+            refreshCat()
+            amount.requestFocus()
+        }
+        cIn.setOnClickListener { selectType(0) }
+        cOut.setOnClickListener { selectType(1) }
+        setForm(false, false)
+
+        // nominal otomatis berformat rupiah: Rp 1.250.000
+        amount.addTextChangedListener(watcher { e ->
+            if (!fmtBusy) {
+                fmtBusy = true
+                val digits = e.toString().filter { it.isDigit() }.take(12)
+                val txt = if (digits.isEmpty()) "" else "Rp " + NumberFormat.getInstance(Locale("id","ID")).format(digits.toLong())
+                if (e.toString() != txt) e.replace(0, e.length, txt)
+                amount.setSelection(amount.text.length)
+                fmtBusy = false
+            }
+        })
+        // catatan -> kategori otomatis
+        note.addTextChangedListener(watcher { _ -> refreshCat() })
+        category.addTextChangedListener(watcher { e -> if (!settingCat) manualCat = e.isNotEmpty() })
+
+        saveBtn.setOnClickListener {
+            val n = amount.text.toString().filter { it.isDigit() }.toLongOrNull()
+            if (tipe < 0) { Toast.makeText(this, "Pilih uang masuk atau uang keluar dulu", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+            if (n == null || n <= 0) { amount.error = "Masukkan nominal"; return@setOnClickListener }
+            val c = category.text.toString().trim().lowercase().replaceFirstChar { it.uppercase() }.ifEmpty { "Lainnya" }
+            txs.add(Tx(tipe == 1, n, c, note.text.toString().trim(), System.currentTimeMillis()))
+            persist(); recalc(); showDashboard(forward = false)
+            Toast.makeText(this, "Transaksi tersimpan", Toast.LENGTH_SHORT).show()
+        }
+
+        val back = Button(this); back.text = "Batal"; ico(back, R.drawable.ic_close); styleBtn(back)
+        back.setOnClickListener { showDashboard(forward = false) }
         root.addView(back, mlp())
         show(scrolled(root), true, true)
     }

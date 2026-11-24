@@ -12,7 +12,7 @@ android {
         targetSdk = 35
         // Naik otomatis di tiap build GitHub Actions supaya APK baru selalu bisa menimpa yang lama
         versionCode = 3 + (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0)
-        versionName = "1.6"
+        versionName = "1.7"
     }
     // Kunci tanda tangan tetap: update APK menimpa aplikasi lama tanpa menghapus data
     signingConfigs {
